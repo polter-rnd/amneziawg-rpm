@@ -3,12 +3,16 @@
 
 Name:           NetworkManager-amneziawg
 Version:        0.9.11
-Release:        0.1.git%{shortcommit}%{?dist}
+Release:        1.git%{shortcommit}%{?dist}
 Summary:        NetworkManager VPN plugin for AmneziaWG VPN
 
 License:        GPL-2.0-or-later
 URL:            https://github.com/vovochka404/network-manager-amneziawg
 Source0:        %{url}/archive/%{commit}/network-manager-amneziawg-%{shortcommit}.tar.gz
+
+# GTK4 connection editor (GNOME Settings) and runtime GTK3/GTK4 editor selection
+Patch0:         0001-feat-add-GTK4-editor-UI.patch
+Patch1:         0002-feat-add-GNOME-auth-dialog-helper-for-VPN-secrets.patch
 
 BuildRequires:  cmake
 BuildRequires:  gcc
@@ -49,7 +53,7 @@ NetworkManager AmneziaWG VPN plugin, used by nm-connection-editor, GNOME
 Settings and other libnma based front ends.
 
 %prep
-%autosetup -n network-manager-amneziawg-%{commit}
+%autosetup -p1 -n network-manager-amneziawg-%{commit}
 
 %build
 # The tarball has no git metadata, so the CMake version detection falls back to
@@ -76,6 +80,7 @@ Settings and other libnma based front ends.
 %license COPYING
 %doc CONTRIBUTING.md README.md CHANGELOG.md
 %{_libexecdir}/nm-amneziawg-service
+%{_libexecdir}/nm-amneziawg-auth-dialog
 %{_prefix}/lib/NetworkManager/VPN/nm-amneziawg-service.name
 %{_libdir}/NetworkManager/libnm-vpn-plugin-amneziawg.so
 %{_libdir}/NetworkManager/libnm-vpn-plugin-amneziawg-core.so
@@ -87,5 +92,8 @@ Settings and other libnma based front ends.
 %{_libdir}/NetworkManager/libnm-gtk4-vpn-plugin-amneziawg-editor.so
 
 %changelog
+* Sun Oct 11 2026 Pavel Artsishevsky <polter.rnd@gmail.com> - 0.9.11-1.git8d5221e
+- Add GTK4 connection editor and the GNOME auth dialog helper (now shows the stored keys)
+
 * Sun Oct 11 2026 Pavel Artsishevsky <polter.rnd@gmail.com> - 0.9.11-0.1.git8d5221e
 - Snapshot of master including AmneziaWG 3.1 import/editor/netlink support

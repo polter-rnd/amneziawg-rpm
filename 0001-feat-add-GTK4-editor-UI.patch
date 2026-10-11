@@ -1,0 +1,1782 @@
+From 67eb34afd6046f22fb9a512781491779382e6821 Mon Sep 17 00:00:00 2001
+From: Pavel Artsishevsky <polter.rnd@gmail.com>
+Date: Sun, 11 Oct 2026 19:00:53 +0200
+Subject: [PATCH 1/2] feat: add GTK4 editor UI
+
+Based on tigro's Fedora patch. The GTK4 editor could not load the
+GTK3 Glade dialog (GtkDialog.type-hint etc.), which left
+gnome-control-center with a broken editor.
+
+- Add a GTK4 dialog UI and separate GResource bundle, including the
+  AmneziaWG 3.1 frame, with an aligned grid layout and collapsible
+  obfuscation / 3.1 sections
+- Pick the GTK3 or GTK4 editor library at runtime
+- Use a GtkListBox for the peer list and a GtkRevealer for errors in
+  GTK4 builds
+- Use the GtkCheckButton API for check boxes under GTK4 (it is no
+  longer a GtkToggleButton), via AWG_CHECK_{GET,SET}_ACTIVE
+- Disconnect widget signal handlers when the editor is disposed: the
+  host drops the editor before tearing the page down, and GTK4 then
+  emits row-selected on the peer list, which crashed
+  gnome-control-center
+- Log and return UI load failures instead of g_return_val_if_reached
+- Drop the GTK3-only type-hint property from the GTK3 dialog
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt                          |   45 +-
+ properties/gresource-gtk4.xml           |    6 +
+ properties/gtk-compat.h                 |    5 +
+ properties/nm-amneziawg-dialog-gtk4.ui  | 1103 +++++++++++++++++++++++
+ properties/nm-amneziawg-dialog.ui       |    1 -
+ properties/nm-amneziawg-editor-plugin.c |   32 +-
+ properties/nm-amneziawg-editor.c        |  231 ++++-
+ 7 files changed, 1390 insertions(+), 33 deletions(-)
+ create mode 100644 properties/gresource-gtk4.xml
+ create mode 100644 properties/nm-amneziawg-dialog-gtk4.ui
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 30476af..0dd3381 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -102,6 +102,7 @@ set(CMAKE_C_FLAGS_RELEASE "-O2")
+ 
+ find_package(PkgConfig REQUIRED)
+ pkg_check_modules(GLIB REQUIRED glib-2.0)
++pkg_check_modules(GMODULE REQUIRED gmodule-2.0)
+ pkg_check_modules(LIBNM REQUIRED libnm)
+ 
+ set(HAVE_GTK3 OFF)
+@@ -219,6 +220,7 @@ set(COMMON_DEFINITIONS
+ 
+ set(PROPERTIES_RESOURCES_DIR ${CMAKE_SOURCE_DIR}/properties)
+ set(PROPERTIES_RESOURCES_XML ${CMAKE_SOURCE_DIR}/properties/gresource.xml)
++set(PROPERTIES_GTK4_RESOURCES_XML ${CMAKE_SOURCE_DIR}/properties/gresource-gtk4.xml)
+ 
+ # The resource bundles files that gresource.xml refers to (.ui and friends).
+ # Depending on the XML alone means editing one of them rebuilds nothing — the
+@@ -272,6 +274,34 @@ add_custom_command(
+ 
+ add_custom_target(gresources ALL DEPENDS properties/resources.h properties/resources.c)
+ 
++add_custom_command(
++    OUTPUT properties/resources-gtk4.h
++    COMMAND /usr/bin/glib-compile-resources
++        ${PROPERTIES_GTK4_RESOURCES_XML}
++        --target=properties/resources-gtk4.h
++        --sourcedir=${PROPERTIES_RESOURCES_DIR}
++        --generate-header
++        --internal
++    DEPENDS ${PROPERTIES_GTK4_RESOURCES_XML}
++            properties/nm-amneziawg-dialog-gtk4.ui
++    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
++)
++
++add_custom_command(
++    OUTPUT properties/resources-gtk4.c
++    COMMAND /usr/bin/glib-compile-resources
++        ${PROPERTIES_GTK4_RESOURCES_XML}
++        --target=properties/resources-gtk4.c
++        --sourcedir=${PROPERTIES_RESOURCES_DIR}
++        --generate-source
++        --internal
++    DEPENDS ${PROPERTIES_GTK4_RESOURCES_XML}
++            properties/nm-amneziawg-dialog-gtk4.ui
++    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
++)
++
++add_custom_target(gresources-gtk4 ALL DEPENDS properties/resources-gtk4.h properties/resources-gtk4.c)
++
+ set(PROPERTIES_CPPFLAGS
+     -DICONDIR=\"${CMAKE_INSTALL_PREFIX}/share/pixmaps\"
+     -DLOCALEDIR=\"${LOCALEDIR}\"
+@@ -390,7 +420,13 @@ target_compile_options(nm-vpn-plugin-amneziawg PRIVATE
+     -DNETWORKMANAGER_COMPILATION=NM_NETWORKMANAGER_COMPILATION_LIB_BASE
+     -DNM_PLUGIN_DIR="${NM_PLUGIN_DIR}"
+ )
+-target_link_libraries(nm-vpn-plugin-amneziawg PRIVATE ${COMMON_LDFLAGS} nm-vpn-plugin-amneziawg-core ${LIBNM_LIBRARIES} ${CMAKE_DL_LIBS})
++target_link_libraries(nm-vpn-plugin-amneziawg PRIVATE
++    ${COMMON_LDFLAGS}
++    nm-vpn-plugin-amneziawg-core
++    ${LIBNM_LIBRARIES}
++    ${GMODULE_LIBRARIES}
++    ${CMAKE_DL_LIBS}
++)
+ set_target_properties(nm-vpn-plugin-amneziawg PROPERTIES
+     OUTPUT_NAME "nm-vpn-plugin-amneziawg"
+ )
+@@ -424,7 +460,11 @@ if(WITH_GTK3)
+ endif()
+ 
+ if(WITH_GTK4)
+-    add_library(nm-vpn-plugin-amneziawg-editor-gtk4 SHARED ${EDITOR_SOURCES})
++    add_library(nm-vpn-plugin-amneziawg-editor-gtk4 SHARED
++        ${EDITOR_SOURCES}
++        properties/resources-gtk4.h
++        properties/resources-gtk4.c
++    )
+     target_include_directories(nm-vpn-plugin-amneziawg-editor-gtk4 PRIVATE ${CMAKE_SOURCE_DIR}/shared ${CMAKE_BINARY_DIR} ${GTK4_INCLUDE_DIRS} ${LIBNMA4_INCLUDE_DIRS})
+     target_link_libraries(nm-vpn-plugin-amneziawg-editor-gtk4 PRIVATE
+         ${COMMON_LDFLAGS} nm-vpn-plugin-amneziawg-core nm-vpn-plugin-amneziawg-utils ${GLIB_LIBRARIES} ${GTK4_LIBRARIES} ${LIBNM_LIBRARIES} ${LIBNMA4_LIBRARIES}
+@@ -433,6 +473,7 @@ if(WITH_GTK4)
+         ${COMMON_CFLAGS} ${GTK4_CFLAGS} ${COMMON_DEFINITIONS} ${PROPERTIES_CPPFLAGS}
+         -DNETWORKMANAGER_COMPILATION=NM_NETWORKMANAGER_COMPILATION_LIB_EDITOR
+         -DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_4_6
++        -DAMNEZIAWG_UI_RESOURCE_PATH="/org/freedesktop/network-manager-amneziawg-gtk4/nm-amneziawg-dialog-gtk4.ui"
+     )
+     target_link_options(nm-vpn-plugin-amneziawg-editor-gtk4 PRIVATE
+             "-Wl,--version-script=${CMAKE_SOURCE_DIR}/properties/nm-vpn-plugin-amneziawg-editor.ver"
+diff --git a/properties/gresource-gtk4.xml b/properties/gresource-gtk4.xml
+new file mode 100644
+index 0000000..3d254da
+--- /dev/null
++++ b/properties/gresource-gtk4.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<gresources>
++	<gresource prefix="/org/freedesktop/network-manager-amneziawg-gtk4">
++		<file preprocess="xml-stripblanks">nm-amneziawg-dialog-gtk4.ui</file>
++	</gresource>
++</gresources>
+diff --git a/properties/gtk-compat.h b/properties/gtk-compat.h
+index 227ed4d..63325cc 100644
+--- a/properties/gtk-compat.h
++++ b/properties/gtk-compat.h
+@@ -15,9 +15,14 @@
+ #include <gtk/gtk.h>
+ 
+ #if GTK_CHECK_VERSION(4, 0, 0)
++/* GtkCheckButton is no longer a GtkToggleButton in GTK4 */
++#define AWG_CHECK_GET_ACTIVE(widget) gtk_check_button_get_active(GTK_CHECK_BUTTON(widget))
++#define AWG_CHECK_SET_ACTIVE(widget, active) gtk_check_button_set_active(GTK_CHECK_BUTTON(widget), active)
+ #define AWG_EDITABLE_GET_TEXT(widget) gtk_editable_get_text(GTK_EDITABLE(widget))
+ #define AWG_EDITABLE_SET_TEXT(widget, text) gtk_editable_set_text(GTK_EDITABLE(widget), text)
+ #else
++#define AWG_CHECK_GET_ACTIVE(widget) gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget))
++#define AWG_CHECK_SET_ACTIVE(widget, active) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), active)
+ #define AWG_EDITABLE_GET_TEXT(widget) gtk_entry_get_text(GTK_ENTRY(widget))
+ #define AWG_EDITABLE_SET_TEXT(widget, text) gtk_entry_set_text(GTK_ENTRY(widget), text)
+ #endif
+diff --git a/properties/nm-amneziawg-dialog-gtk4.ui b/properties/nm-amneziawg-dialog-gtk4.ui
+new file mode 100644
+index 0000000..6115470
+--- /dev/null
++++ b/properties/nm-amneziawg-dialog-gtk4.ui
+@@ -0,0 +1,1103 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<interface>
++  <requires lib="gtk" version="4.0" />
++  <object class="GtkAdjustment" id="adj_fwmark">
++    <property name="upper">4294967295</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_jc">
++    <property name="upper">65535</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_jmax">
++    <property name="upper">65534</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_jmin">
++    <property name="upper">65535</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_keepalive">
++    <property name="upper">450</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkDialog" id="PeerDialog">
++    <property name="width-request">450</property>
++    <property name="title" translatable="yes">Edit AmneziaWG Peer</property>
++    <child>
++      <object class="GtkBox">
++        <property name="orientation">vertical</property>
++        <property name="spacing">12</property>
++        <property name="margin-top">12</property>
++        <property name="margin-bottom">12</property>
++        <property name="margin-start">12</property>
++        <property name="margin-end">12</property>
++        <child>
++          <object class="GtkRevealer" id="peer_dialog_info_bar">
++            <child>
++              <object class="GtkLabel" id="peer_dialog_label_info">
++                <property name="wrap">True</property>
++                <property name="xalign">0</property>
++              </object>
++            </child>
++          </object>
++        </child>
++        <child>
++          <object class="GtkGrid">
++            <property name="row-spacing">8</property>
++            <property name="column-spacing">12</property>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Public Key:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">0</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="peer_dialog_public_key">
++                <property name="tooltip-markup" translatable="yes">Base64-encoded 32-byte public key of the peer.</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">0</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Allowed IPs:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">1</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="peer_dialog_allowed_ips">
++                <property name="tooltip-markup" translatable="yes">Comma-separated list of IP addresses and prefixes to route through the peer (e.g., 10.0.0.0/24, 0.0.0.0/0 for all IPv4).</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">1</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Endpoint:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">2</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="peer_dialog_endpoint">
++                <property name="tooltip-markup" translatable="yes">Host:port of the peer endpoint (e.g., vpn.example.com:51820).</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">2</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Preshared Key:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">3</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkBox">
++                <property name="orientation">vertical</property>
++                <property name="spacing">6</property>
++                <child>
++                  <object class="GtkEntry" id="peer_dialog_psk">
++                    <property name="tooltip-markup" translatable="yes">Optional base64-encoded 32-byte preshared key for extra security.</property>
++                    <property name="input-purpose">password</property>
++                    <property name="hexpand">1</property>
++                  </object>
++                </child>
++                <child>
++                  <object class="GtkCheckButton" id="peer_dialog_show_psk">
++                    <property name="label" translatable="yes">Show preshared key</property>
++                    <property name="use-underline">True</property>
++                    <property name="halign">start</property>
++                  </object>
++                </child>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">3</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Persistent Keepalive:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">4</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkSpinButton" id="peer_dialog_keepalive">
++                <property name="tooltip-markup" translatable="yes">Seconds between persistent keepalive packets (0 = disabled, recommended 25).</property>
++                <property name="width-chars">5</property>
++                <property name="adjustment">adj_keepalive</property>
++                <property name="halign">start</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">4</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkCheckButton" id="peer_dialog_advanced_security">
++                <property name="label" translatable="yes">_Advanced Security</property>
++                <property name="tooltip-markup" translatable="yes">Enable advanced security features for this peer (junk packets, headers, etc.).</property>
++                <property name="use-underline">True</property>
++                <property name="halign">start</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">5</property>
++                </layout>
++              </object>
++            </child>
++          </object>
++        </child>
++        <child>
++          <object class="GtkBox">
++            <property name="orientation">horizontal</property>
++            <property name="spacing">6</property>
++            <property name="halign">end</property>
++            <property name="margin-top">6</property>
++            <child>
++              <object class="GtkButton" id="peer_dialog_button_cancel">
++                <property name="label" translatable="yes">_Cancel</property>
++                <property name="use-underline">True</property>
++              </object>
++            </child>
++            <child>
++              <object class="GtkButton" id="peer_dialog_button_apply">
++                <property name="label" translatable="yes">_Apply</property>
++                <property name="sensitive">False</property>
++                <property name="use-underline">True</property>
++              </object>
++            </child>
++          </object>
++        </child>
++      </object>
++    </child>
++  </object>
++  <object class="GtkAdjustment" id="adj_listen_port">
++    <property name="upper">65535</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_mtu">
++    <property name="upper">1500</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_s1">
++    <property name="upper">65535</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_s2">
++    <property name="upper">65535</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_s3">
++    <property name="upper">65479</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkAdjustment" id="adj_s4">
++    <property name="upper">65503</property>
++    <property name="step-increment">1</property>
++    <property name="page-increment">10</property>
++  </object>
++  <object class="GtkBox" id="wg-vbox">
++    <property name="orientation">vertical</property>
++    <property name="spacing">18</property>
++    <property name="margin-top">12</property>
++    <property name="margin-bottom">12</property>
++    <property name="margin-start">12</property>
++    <property name="margin-end">12</property>
++    <child>
++      <object class="GtkBox" id="wg-interface">
++        <property name="orientation">vertical</property>
++        <property name="spacing">8</property>
++        <child>
++          <object class="GtkLabel">
++            <property name="halign">start</property>
++            <property name="xalign">0</property>
++            <property name="label" translatable="yes">Interface</property>
++            <style>
++              <class name="heading" />
++            </style>
++          </object>
++        </child>
++        <child>
++          <object class="GtkGrid">
++            <property name="row-spacing">8</property>
++            <property name="column-spacing">12</property>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Private Key:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">0</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkBox">
++                <property name="orientation">horizontal</property>
++                <property name="spacing">12</property>
++                <child>
++                  <object class="GtkEntry" id="interface_private_key_entry">
++                    <property name="tooltip-markup" translatable="yes">Base64-encoded 32-byte private key for the interface.</property>
++                    <property name="input-purpose">password</property>
++                    <property name="hexpand">1</property>
++                  </object>
++                </child>
++                <child>
++                  <object class="GtkCheckButton" id="interface_show_private_key">
++                    <property name="label" translatable="yes">Show private key</property>
++                    <property name="use-underline">True</property>
++                  </object>
++                </child>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">0</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Listen Port:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">1</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkSpinButton" id="interface_port_entry">
++                <property name="tooltip-markup" translatable="yes">UDP port to listen on (0 = random port).</property>
++                <property name="width-chars">7</property>
++                <property name="adjustment">adj_listen_port</property>
++                <property name="climb-rate">1</property>
++                <property name="halign">start</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">1</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">MTU:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">2</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkSpinButton" id="interface_mtu_entry">
++                <property name="tooltip-markup" translatable="yes">MTU of the interface (0 = auto-detect, typical values 1280-1500).</property>
++                <property name="width-chars">7</property>
++                <property name="adjustment">adj_mtu</property>
++                <property name="climb-rate">1</property>
++                <property name="halign">start</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">2</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">FwMark:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">3</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkSpinButton" id="interface_fwmark_entry">
++                <property name="tooltip-markup" translatable="yes">Firewall mark for the interface (optional, used for routing/firewall rules).</property>
++                <property name="width-chars">7</property>
++                <property name="adjustment">adj_fwmark</property>
++                <property name="climb-rate">1</property>
++                <property name="halign">start</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">3</property>
++                </layout>
++              </object>
++            </child>
++          </object>
++        </child>
++      </object>
++    </child>
++    <child>
++      <object class="GtkExpander" id="awg_obfuscation_frame">
++        <property name="label" translatable="yes">AmneziaWG Obfuscation</property>
++        <child>
++          <object class="GtkBox">
++            <property name="orientation">vertical</property>
++            <property name="spacing">12</property>
++            <property name="margin-top">8</property>
++            <property name="margin-start">18</property>
++            <child>
++              <object class="GtkBox">
++                <property name="orientation">vertical</property>
++                <property name="spacing">8</property>
++                <child>
++                  <object class="GtkLabel">
++                    <property name="halign">start</property>
++                    <property name="xalign">0</property>
++                    <property name="label" translatable="yes">Junk Packets</property>
++                    <style>
++                      <class name="heading" />
++                    </style>
++                  </object>
++                </child>
++                <child>
++                  <object class="GtkGrid">
++                    <property name="row-spacing">8</property>
++                    <property name="column-spacing">12</property>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">Jc:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_jc_entry">
++                        <property name="tooltip-markup" translatable="yes">Junk packet count - number of random junk sizes to use.</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_jc</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">JMin:</property>
++                        <layout>
++                          <property name="column">2</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_jmin_entry">
++                        <property name="tooltip-markup" translatable="yes">Minimum junk packet size in bytes.</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_jmin</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">3</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">JMax:</property>
++                        <layout>
++                          <property name="column">4</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_jmax_entry">
++                        <property name="tooltip-markup" translatable="yes">Maximum junk packet size in bytes.</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_jmax</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">5</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                  </object>
++                </child>
++              </object>
++            </child>
++            <child>
++              <object class="GtkBox">
++                <property name="orientation">vertical</property>
++                <property name="spacing">8</property>
++                <child>
++                  <object class="GtkLabel">
++                    <property name="halign">start</property>
++                    <property name="xalign">0</property>
++                    <property name="label" translatable="yes">Noise Packet Sizes</property>
++                    <style>
++                      <class name="heading" />
++                    </style>
++                  </object>
++                </child>
++                <child>
++                  <object class="GtkGrid">
++                    <property name="row-spacing">8</property>
++                    <property name="column-spacing">12</property>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">S1:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_s1_entry">
++                        <property name="tooltip-markup" translatable="yes">First noise packet size.</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_s1</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">S2:</property>
++                        <layout>
++                          <property name="column">2</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_s2_entry">
++                        <property name="tooltip-markup" translatable="yes">Second noise packet size.</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_s2</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">3</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">S3:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_s3_entry">
++                        <property name="tooltip-markup" translatable="yes">Cookie reply packet junk size (max 65479).</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_s3</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">S4:</property>
++                        <layout>
++                          <property name="column">2</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkSpinButton" id="interface_s4_entry">
++                        <property name="tooltip-markup" translatable="yes">Transport packet junk size (max 65503).</property>
++                        <property name="width-chars">7</property>
++                        <property name="adjustment">adj_s4</property>
++                        <property name="climb-rate">1</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">3</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                  </object>
++                </child>
++              </object>
++            </child>
++            <child>
++              <object class="GtkBox">
++                <property name="orientation">vertical</property>
++                <property name="spacing">8</property>
++                <child>
++                  <object class="GtkLabel">
++                    <property name="halign">start</property>
++                    <property name="xalign">0</property>
++                    <property name="label" translatable="yes">Magic Headers</property>
++                    <style>
++                      <class name="heading" />
++                    </style>
++                  </object>
++                </child>
++                <child>
++                  <object class="GtkGrid">
++                    <property name="row-spacing">8</property>
++                    <property name="column-spacing">12</property>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">H1:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_h1_entry">
++                        <property name="tooltip-markup" translatable="yes">First handshake packet magic header. Format: single number (e.g., 1) or range (e.g., 100-200). H1-H4 ranges must not overlap.</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">H2:</property>
++                        <layout>
++                          <property name="column">2</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_h2_entry">
++                        <property name="tooltip-markup" translatable="yes">Second handshake packet magic header. Format: single number (e.g., 2) or range (e.g., 100-200). H1-H4 ranges must not overlap.</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">3</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">H3:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_h3_entry">
++                        <property name="tooltip-markup" translatable="yes">Third handshake packet magic header. Format: single number (e.g., 3) or range (e.g., 100-200). H1-H4 ranges must not overlap.</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">H4:</property>
++                        <layout>
++                          <property name="column">2</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_h4_entry">
++                        <property name="tooltip-markup" translatable="yes">Fourth handshake packet magic header. Format: single number (e.g., 4) or range (e.g., 100-200). H1-H4 ranges must not overlap.</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">3</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                  </object>
++                </child>
++              </object>
++            </child>
++            <child>
++              <object class="GtkBox">
++                <property name="orientation">vertical</property>
++                <property name="spacing">8</property>
++                <child>
++                  <object class="GtkLabel">
++                    <property name="halign">start</property>
++                    <property name="xalign">0</property>
++                    <property name="label" translatable="yes">Init Packet Content</property>
++                    <style>
++                      <class name="heading" />
++                    </style>
++                  </object>
++                </child>
++                <child>
++                  <object class="GtkGrid">
++                    <property name="row-spacing">8</property>
++                    <property name="column-spacing">12</property>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">I1:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_i1_entry">
++                        <property name="tooltip-markup" translatable="yes">First init packet content (CPS format). Tags: &amp;lt;r N&amp;gt; (random bytes), &amp;lt;rc N&amp;gt; (random ASCII), &amp;lt;rd N&amp;gt; (random digits), &amp;lt;c&amp;gt; (counter), &amp;lt;t&amp;gt; (timestamp), &amp;lt;b 0xHEX&amp;gt; (static bytes). Example: &amp;lt;r 16&amp;gt;&amp;lt;c&amp;gt;&amp;lt;t&amp;gt;&amp;lt;b 0xDEADBEEF&amp;gt;</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">0</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">I2:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_i2_entry">
++                        <property name="tooltip-markup" translatable="yes">Second init packet content (CPS format). Tags: &amp;lt;r N&amp;gt; (random bytes), &amp;lt;rc N&amp;gt; (random ASCII), &amp;lt;rd N&amp;gt; (random digits), &amp;lt;c&amp;gt; (counter), &amp;lt;t&amp;gt; (timestamp), &amp;lt;b 0xHEX&amp;gt; (static bytes). Example: &amp;lt;rc 10&amp;gt;&amp;lt;t&amp;gt;</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">1</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">I3:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">2</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_i3_entry">
++                        <property name="tooltip-markup" translatable="yes">Third init packet content (CPS format). Tags: &amp;lt;r N&amp;gt; (random bytes), &amp;lt;rc N&amp;gt; (random ASCII), &amp;lt;rd N&amp;gt; (random digits), &amp;lt;c&amp;gt; (counter), &amp;lt;t&amp;gt; (timestamp), &amp;lt;b 0xHEX&amp;gt; (static bytes). Example: &amp;lt;b 0xDEADBEEF&amp;gt;</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">2</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">I4:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">3</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_i4_entry">
++                        <property name="tooltip-markup" translatable="yes">Fourth init packet content (CPS format). Tags: &amp;lt;r N&amp;gt; (random bytes), &amp;lt;rc N&amp;gt; (random ASCII), &amp;lt;rd N&amp;gt; (random digits), &amp;lt;c&amp;gt; (counter), &amp;lt;t&amp;gt; (timestamp), &amp;lt;b 0xHEX&amp;gt; (static bytes). Example: &amp;lt;r 16&amp;gt;&amp;lt;t&amp;gt;</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">3</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkLabel">
++                        <property name="halign">start</property>
++                        <property name="xalign">0</property>
++                        <property name="label" translatable="yes">I5:</property>
++                        <layout>
++                          <property name="column">0</property>
++                          <property name="row">4</property>
++                        </layout>
++                      </object>
++                    </child>
++                    <child>
++                      <object class="GtkEntry" id="interface_i5_entry">
++                        <property name="tooltip-markup" translatable="yes">Fifth init packet content (CPS format). Tags: &amp;lt;r N&amp;gt; (random bytes), &amp;lt;rc N&amp;gt; (random ASCII), &amp;lt;rd N&amp;gt; (random digits), &amp;lt;c&amp;gt; (counter), &amp;lt;t&amp;gt; (timestamp), &amp;lt;b 0xHEX&amp;gt; (static bytes). Example: &amp;lt;b 0xAABBCCDD&amp;gt;&amp;lt;rc 5&amp;gt;&amp;lt;rd 3&amp;gt;&amp;lt;c&amp;gt;</property>
++                        <property name="width-chars">20</property>
++                        <property name="hexpand">1</property>
++                        <layout>
++                          <property name="column">1</property>
++                          <property name="row">4</property>
++                        </layout>
++                      </object>
++                    </child>
++                  </object>
++                </child>
++              </object>
++            </child>
++          </object>
++        </child>
++      </object>
++    </child>
++    <child>
++      <object class="GtkExpander">
++        <property name="label" translatable="yes">AmneziaWG 3.1</property>
++        <child>
++          <object class="GtkGrid">
++            <property name="row-spacing">8</property>
++            <property name="column-spacing">12</property>
++            <property name="margin-top">8</property>
++            <property name="margin-start">18</property>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Header protection key:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">0</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_header_protection_key_entry">
++                <property name="tooltip-markup" translatable="yes">Base64-encoded 32-byte key used to protect packet headers. AWG 3.1 only; leave empty for older servers.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">0</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Content padding addition:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">1</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_content_padding_addition_entry">
++                <property name="tooltip-markup" translatable="yes">Random padding added to every packet, as a single number (e.g. 10) or a range (e.g. 2-10), 0-65535. AWG 3.1 only.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">1</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Rekey after time:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">2</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_rekey_after_time_entry">
++                <property name="tooltip-markup" translatable="yes">Seconds after which a session is rekeyed, as a number or range (e.g. 115-125). AWG 3.1 only.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">2</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Rekey timeout:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">3</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_rekey_timeout_entry">
++                <property name="tooltip-markup" translatable="yes">Seconds between rekey attempts, as a number or range (e.g. 5-6). AWG 3.1 only.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">3</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Reject after time:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">4</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_reject_after_time_entry">
++                <property name="tooltip-markup" translatable="yes">Seconds after which a session is dropped, as a number or range (e.g. 175-185). AWG 3.1 only.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">4</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Keepalive timeout:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">5</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_keepalive_timeout_entry">
++                <property name="tooltip-markup" translatable="yes">Seconds before a keepalive is sent, as a number or range (e.g. 10-12). AWG 3.1 only.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">5</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Max handshake attempts:</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">6</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkEntry" id="interface_max_handshake_attempts_entry">
++                <property name="tooltip-markup" translatable="yes">How many handshake attempts are made, as a number or range (e.g. 16-20). AWG 3.1 only.</property>
++                <property name="width-chars">28</property>
++                <property name="hexpand">1</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">6</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Random trailers</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">7</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkCheckButton" id="interface_random_trailers_check">
++                <property name="tooltip-markup" translatable="yes">Append random data to every packet. AWG 3.1 only.</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">7</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkLabel">
++                <property name="halign">start</property>
++                <property name="xalign">0</property>
++                <property name="label" translatable="yes">Disable cookies</property>
++                <layout>
++                  <property name="column">0</property>
++                  <property name="row">8</property>
++                </layout>
++              </object>
++            </child>
++            <child>
++              <object class="GtkCheckButton" id="interface_disable_cookies_check">
++                <property name="tooltip-markup" translatable="yes">Do not send cookie replies. AWG 3.1 only.</property>
++                <layout>
++                  <property name="column">1</property>
++                  <property name="row">8</property>
++                </layout>
++              </object>
++            </child>
++          </object>
++        </child>
++      </object>
++    </child>
++    <child>
++      <object class="GtkBox" id="wg-peers-box">
++        <property name="orientation">vertical</property>
++        <child>
++          <object class="GtkLabel">
++            <property name="label" translatable="yes">Peers</property>
++            <property name="xalign">0</property>
++            <style>
++              <class name="heading" />
++            </style>
++          </object>
++        </child>
++        <child>
++          <object class="GtkBox" id="peers-buttons">
++            <property name="spacing">6</property>
++            <child>
++              <object class="GtkButton" id="peer_add_button">
++                <property name="label" translatable="yes">Add</property>
++              </object>
++            </child>
++            <child>
++              <object class="GtkButton" id="peer_edit_button">
++                <property name="label" translatable="yes">Edit</property>
++                <property name="sensitive">False</property>
++              </object>
++            </child>
++            <child>
++              <object class="GtkButton" id="peer_remove_button">
++                <property name="label" translatable="yes">Remove</property>
++                <property name="sensitive">False</property>
++              </object>
++            </child>
++          </object>
++        </child>
++        <child>
++          <object class="GtkScrolledWindow">
++            <property name="height-request">100</property>
++            <property name="hscrollbar-policy">never</property>
++            <child>
++              <object class="GtkListBox" id="peers_treeview">
++                <property name="selection-mode">single</property>
++              </object>
++            </child>
++            <property name="has-frame">1</property>
++            <property name="hexpand">1</property>
++          </object>
++        </child>
++        <property name="spacing">8</property>
++      </object>
++    </child>
++  </object>
++</interface>
+diff --git a/properties/nm-amneziawg-dialog.ui b/properties/nm-amneziawg-dialog.ui
+index f0199ef..f60cb8e 100644
+--- a/properties/nm-amneziawg-dialog.ui
++++ b/properties/nm-amneziawg-dialog.ui
+@@ -31,7 +31,6 @@
+     <property name="width-request">450</property>
+     <property name="can-focus">False</property>
+     <property name="title" translatable="yes">Edit AmneziaWG Peer</property>
+-    <property name="type-hint">dialog</property>
+     <child internal-child="vbox">
+       <object class="GtkBox">
+         <property name="can-focus">False</property>
+diff --git a/properties/nm-amneziawg-editor-plugin.c b/properties/nm-amneziawg-editor-plugin.c
+index 2be03e5..aa18be1 100644
+--- a/properties/nm-amneziawg-editor-plugin.c
++++ b/properties/nm-amneziawg-editor-plugin.c
+@@ -205,19 +205,33 @@ _call_editor_factory(gpointer factory,
+ static NMVpnEditor *
+ get_editor(NMVpnEditorPlugin *iface, NMConnection *connection, GError **error)
+ {
++    gpointer gtk4_only_symbol;
++    GModule *self_module;
++    const char *editor;
++    char *editor_path;
++    NMVpnEditor *result;
++
+     g_return_val_if_fail(AMNEZIAWG_IS_EDITOR_PLUGIN(iface), NULL);
+     g_return_val_if_fail(NM_IS_CONNECTION(connection), NULL);
+     g_return_val_if_fail(!error || !*error, NULL);
+ 
+-    {
+-        return nm_vpn_plugin_utils_load_editor(NM_PLUGIN_DIR "/libnm-vpn-plugin-amneziawg-editor.so",
+-                                               "nm_vpn_editor_factory_amneziawg",
+-                                               _call_editor_factory,
+-                                               iface,
+-                                               connection,
+-                                               NULL,
+-                                               error);
+-    }
++    self_module = g_module_open(NULL, 0);
++    g_module_symbol(self_module, "gtk_window_set_child", &gtk4_only_symbol);
++    g_module_close(self_module);
++
++    editor = gtk4_only_symbol ? "libnm-gtk4-vpn-plugin-amneziawg-editor.so"
++                              : "libnm-vpn-plugin-amneziawg-editor.so";
++    editor_path = g_strdup_printf("%s/%s", NM_PLUGIN_DIR, editor);
++
++    result = nm_vpn_plugin_utils_load_editor(editor_path,
++                                             "nm_vpn_editor_factory_amneziawg",
++                                             _call_editor_factory,
++                                             iface,
++                                             connection,
++                                             NULL,
++                                             error);
++    g_free(editor_path);
++    return result;
+ }
+ 
+ /*****************************************************************************/
+diff --git a/properties/nm-amneziawg-editor.c b/properties/nm-amneziawg-editor.c
+index 11670ff..5a0525b 100644
+--- a/properties/nm-amneziawg-editor.c
++++ b/properties/nm-amneziawg-editor.c
+@@ -43,6 +43,10 @@
+ #include "awg/awg-nm-connection.h"
+ #include "awg/awg-validate.h"
+ 
++#ifndef AMNEZIAWG_UI_RESOURCE_PATH
++#define AMNEZIAWG_UI_RESOURCE_PATH "/org/freedesktop/network-manager-amneziawg/nm-amneziawg-dialog.ui"
++#endif
++
+ /*****************************************************************************/
+ 
+ static void amneziawg_editor_plugin_widget_interface_init(NMVpnEditorInterface *iface_class);
+@@ -371,7 +375,7 @@ show_private_key_toggled(GtkWidget *widget, gpointer user_data)
+ 
+     entry = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_private_key_entry"));
+     if (entry) {
+-        gtk_entry_set_visibility(GTK_ENTRY(entry), gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget)));
++        gtk_entry_set_visibility(GTK_ENTRY(entry), AWG_CHECK_GET_ACTIVE(widget));
+     }
+ }
+ 
+@@ -559,7 +563,7 @@ fill_interface_from_connection(AmneziaWGEditor *self)
+         GtkWidget *toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_random_trailers_check"));
+         if (toggle) {
+             str = nm_setting_vpn_get_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_RANDOM_TRAILERS);
+-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), g_strcmp0(str, "on") == 0);
++            AWG_CHECK_SET_ACTIVE(toggle, g_strcmp0(str, "on") == 0);
+         }
+     }
+ 
+@@ -567,7 +571,7 @@ fill_interface_from_connection(AmneziaWGEditor *self)
+         GtkWidget *toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_disable_cookies_check"));
+         if (toggle) {
+             str = nm_setting_vpn_get_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_DISABLE_COOKIES);
+-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), g_strcmp0(str, "on") == 0);
++            AWG_CHECK_SET_ACTIVE(toggle, g_strcmp0(str, "on") == 0);
+         }
+     }
+ }
+@@ -580,11 +584,11 @@ typedef struct {
+     GtkEntry *entry_endpoint;
+     GtkEntry *entry_psk;
+     GtkSpinButton *spin_keepalive;
+-    GtkInfoBar *info_bar;
++    GtkWidget *info_bar;
+     GtkLabel *label_info;
+     GtkButton *button_apply;
+-    GtkToggleButton *toggle_show_psk;
+-    GtkToggleButton *toggle_advanced_security;
++    GtkWidget *toggle_show_psk;
++    GtkWidget *toggle_advanced_security;
+     gboolean is_new;
+ } PeerDialogData;
+ 
+@@ -607,7 +611,7 @@ peer_dialog_update_ui(PeerDialogData *data)
+     guint16 ka = awg_device_peer_get_keep_alive_interval(data->peer);
+     gtk_spin_button_set_value(data->spin_keepalive, ka);
+ 
+-    gtk_toggle_button_set_active(data->toggle_advanced_security, awg_device_peer_get_advanced_security(data->peer));
++    AWG_CHECK_SET_ACTIVE(data->toggle_advanced_security, awg_device_peer_get_advanced_security(data->peer));
+ }
+ 
+ static void
+@@ -635,7 +639,7 @@ peer_dialog_update_peer(PeerDialogData *data)
+     gint keepalive = gtk_spin_button_get_value_as_int(data->spin_keepalive);
+     awg_device_peer_set_keep_alive_interval(data->peer, keepalive);
+ 
+-    awg_device_peer_set_advanced_security(data->peer, gtk_toggle_button_get_active(data->toggle_advanced_security));
++    awg_device_peer_set_advanced_security(data->peer, AWG_CHECK_GET_ACTIVE(data->toggle_advanced_security));
+ }
+ 
+ static void
+@@ -653,7 +657,7 @@ peer_dialog_cancel_clicked(GtkWidget *widget, PeerDialogData *data)
+ static void
+ peer_dialog_show_psk_toggled(GtkWidget *widget, PeerDialogData *data)
+ {
+-    gtk_entry_set_visibility(data->entry_psk, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget)));
++    gtk_entry_set_visibility(data->entry_psk, AWG_CHECK_GET_ACTIVE(widget));
+ }
+ 
+ static gboolean
+@@ -746,7 +750,7 @@ peer_dialog_create(GtkWidget *toplevel, AWGDevicePeer *peer, AmneziaWGEditor *ed
+ 
+     gtk_builder_set_translation_domain(builder, GETTEXT_PACKAGE);
+ 
+-    if (!gtk_builder_add_from_resource(builder, "/org/freedesktop/network-manager-amneziawg/nm-amneziawg-dialog.ui", NULL)) {
++    if (!gtk_builder_add_from_resource(builder, AMNEZIAWG_UI_RESOURCE_PATH, NULL)) {
+         g_object_unref(builder);
+         return NULL;
+     }
+@@ -765,11 +769,11 @@ peer_dialog_create(GtkWidget *toplevel, AWGDevicePeer *peer, AmneziaWGEditor *ed
+     data->entry_endpoint = GTK_ENTRY(gtk_builder_get_object(builder, "peer_dialog_endpoint"));
+     data->entry_psk = GTK_ENTRY(gtk_builder_get_object(builder, "peer_dialog_psk"));
+     data->spin_keepalive = GTK_SPIN_BUTTON(gtk_builder_get_object(builder, "peer_dialog_keepalive"));
+-    data->info_bar = GTK_INFO_BAR(gtk_builder_get_object(builder, "peer_dialog_info_bar"));
++    data->info_bar = GTK_WIDGET(gtk_builder_get_object(builder, "peer_dialog_info_bar"));
+     data->label_info = GTK_LABEL(gtk_builder_get_object(builder, "peer_dialog_label_info"));
+     data->button_apply = GTK_BUTTON(gtk_builder_get_object(builder, "peer_dialog_button_apply"));
+-    data->toggle_show_psk = GTK_TOGGLE_BUTTON(gtk_builder_get_object(builder, "peer_dialog_show_psk"));
+-    data->toggle_advanced_security = GTK_TOGGLE_BUTTON(gtk_builder_get_object(builder, "peer_dialog_advanced_security"));
++    data->toggle_show_psk = GTK_WIDGET(gtk_builder_get_object(builder, "peer_dialog_show_psk"));
++    data->toggle_advanced_security = GTK_WIDGET(gtk_builder_get_object(builder, "peer_dialog_advanced_security"));
+     button_cancel = GTK_WIDGET(gtk_builder_get_object(builder, "peer_dialog_button_cancel"));
+ 
+     g_object_set_data_full(G_OBJECT(dialog), "peer-data", data, (GDestroyNotify)peer_dialog_data_free);
+@@ -845,14 +849,24 @@ peer_dialog_response(GtkDialog *dialog, gint response_id, PeerDialogInfo *info)
+             }
+ 
+             if (!valid) {
+-                gtk_info_bar_set_message_type(data->info_bar, GTK_MESSAGE_ERROR);
++#if GTK_CHECK_VERSION(4, 0, 0)
++                gtk_revealer_set_reveal_child(GTK_REVEALER(data->info_bar), TRUE);
++#else
++                gtk_info_bar_set_message_type(GTK_INFO_BAR(data->info_bar), GTK_MESSAGE_ERROR);
++#endif
+                 gtk_label_set_text(data->label_info, error_msg->str);
++#if !GTK_CHECK_VERSION(4, 0, 0)
+                 gtk_widget_show(GTK_WIDGET(data->info_bar));
++#endif
+                 g_string_free(error_msg, TRUE);
+                 return;
+             }
+ 
++#if GTK_CHECK_VERSION(4, 0, 0)
++            gtk_revealer_set_reveal_child(GTK_REVEALER(data->info_bar), FALSE);
++#else
+             gtk_widget_hide(GTK_WIDGET(data->info_bar));
++#endif
+ 
+             peer_dialog_update_peer(data);
+ 
+@@ -909,6 +923,35 @@ peer_edit_button_clicked(GtkButton *button, gpointer user_data)
+ {
+     AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
+     AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
++#if GTK_CHECK_VERSION(4, 0, 0)
++    GtkListBox *list;
++    GtkListBoxRow *row;
++    AWGDevicePeer *peer;
++    GtkWidget *dialog;
++
++    list = GTK_LIST_BOX(gtk_builder_get_object(priv->builder, "peers_treeview"));
++    row = gtk_list_box_get_selected_row(list);
++    if (!row)
++        return;
++
++    peer = g_object_get_data(G_OBJECT(row), "awg-peer");
++    if (!peer)
++        return;
++
++    priv->dialog_peer = awg_device_peer_new_clone(peer);
++    priv->dialog_peer_index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "awg-peer-index"));
++
++    dialog = peer_dialog_create(GTK_WIDGET(gtk_widget_get_root(priv->widget)),
++                                priv->dialog_peer,
++                                self);
++    if (!dialog) {
++        g_clear_object(&priv->dialog_peer);
++        priv->dialog_peer_index = -1;
++        return;
++    }
++    gtk_widget_show(dialog);
++    return;
++#else
+     GtkWidget *treeview, *dialog;
+     GtkTreeModel *model;
+     GtkTreeSelection *selection;
+@@ -961,6 +1004,7 @@ peer_edit_button_clicked(GtkButton *button, gpointer user_data)
+     }
+ 
+     gtk_widget_show(dialog);
++#endif
+ }
+ 
+ // Callback: TreeView selection changed
+@@ -982,6 +1026,24 @@ peers_treeview_selection_changed(GtkTreeSelection *selection, gpointer user_data
+     }
+ }
+ 
++#if GTK_CHECK_VERSION(4, 0, 0)
++static void
++peers_listbox_selection_changed(GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
++{
++    AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
++    AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
++    GtkWidget *remove_btn;
++    GtkWidget *edit_btn;
++
++    remove_btn = GTK_WIDGET(gtk_builder_get_object(priv->builder, "peer_remove_button"));
++    edit_btn = GTK_WIDGET(gtk_builder_get_object(priv->builder, "peer_edit_button"));
++    if (remove_btn)
++        gtk_widget_set_sensitive(remove_btn, row != NULL);
++    if (edit_btn)
++        gtk_widget_set_sensitive(edit_btn, row != NULL);
++}
++#endif
++
+ // Callback: TreeView row double-clicked to edit peer
+ static void
+ peers_treeview_row_activated(GtkTreeView *tree_view, GtkTreePath *path, GtkTreeViewColumn *column, gpointer user_data)
+@@ -1035,6 +1097,42 @@ peers_treeview_rebuild(AmneziaWGEditor *self)
+     if (!treeview)
+         return;
+ 
++#if GTK_CHECK_VERSION(4, 0, 0)
++    GtkListBox *list = GTK_LIST_BOX(treeview);
++    GtkWidget *child;
++    guint index = 0;
++
++    while ((child = gtk_widget_get_first_child(GTK_WIDGET(list))))
++        gtk_list_box_remove(list, child);
++
++    for (const GList *l = awg_device_get_peers_list(priv->device); l; l = l->next, index++) {
++        AWGDevicePeer *peer = AWG_DEVICE_PEER(l->data);
++        const gchar *public_key = awg_device_peer_get_public_key(peer);
++        const gchar *endpoint = awg_device_peer_get_endpoint(peer);
++        gchar *label_text;
++        GtkListBoxRow *row;
++        GtkWidget *label;
++
++        if (endpoint && endpoint[0] && public_key && public_key[0])
++            label_text = g_strdup_printf("%s - %.8s...", endpoint, public_key);
++        else if (endpoint && endpoint[0])
++            label_text = g_strdup(endpoint);
++        else if (public_key && public_key[0])
++            label_text = g_strdup(public_key);
++        else
++            label_text = g_strdup("(new peer)");
++
++        row = GTK_LIST_BOX_ROW(gtk_list_box_row_new());
++        label = gtk_label_new(label_text);
++        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
++        gtk_list_box_row_set_child(row, label);
++        g_object_set_data(G_OBJECT(row), "awg-peer", peer);
++        g_object_set_data(G_OBJECT(row), "awg-peer-index", GINT_TO_POINTER(index));
++        gtk_list_box_append(list, GTK_WIDGET(row));
++        g_free(label_text);
++    }
++    return;
++#else
+     GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeview));
+     if (!GTK_IS_TREE_STORE(model))
+         return;
+@@ -1060,6 +1158,7 @@ peers_treeview_rebuild(AmneziaWGEditor *self)
+             gtk_tree_store_set(GTK_TREE_STORE(model), &iter, 0, "(new peer)", 1, p, -1);
+         }
+     }
++#endif
+ }
+ 
+ #if GTK_CHECK_VERSION(4, 0, 0)
+@@ -1069,6 +1168,33 @@ peer_delete_dialog_response_cb(GtkDialog *dialog, gint response_id, gpointer use
+ {
+     AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
+     AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
++#if GTK_CHECK_VERSION(4, 0, 0)
++    GtkListBox *list;
++    GtkListBoxRow *row;
++    AWGDevicePeer *peer;
++    guint index;
++
++    gtk_window_destroy(GTK_WINDOW(dialog));
++    if (response_id != GTK_RESPONSE_YES)
++        return;
++
++    list = GTK_LIST_BOX(gtk_builder_get_object(priv->builder, "peers_treeview"));
++    row = gtk_list_box_get_selected_row(list);
++    if (!row)
++        return;
++    peer = g_object_get_data(G_OBJECT(row), "awg-peer");
++    index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(row), "awg-peer-index"));
++    if (!peer)
++        return;
++
++    awg_device_remove_peer(priv->device, index);
++    peers_treeview_rebuild(self);
++    gtk_widget_set_sensitive(GTK_WIDGET(gtk_builder_get_object(priv->builder, "peer_remove_button")), FALSE);
++    gtk_widget_set_visible(GTK_WIDGET(gtk_builder_get_object(priv->builder, "peers_warning_label")),
++                           awg_device_get_peers_count(priv->device) == 0);
++    g_signal_emit_by_name(self, "changed");
++    return;
++#else
+     GtkWidget *treeview, *remove_btn, *warning_label;
+     GtkTreeModel *model;
+     GtkTreeSelection *selection;
+@@ -1124,6 +1250,7 @@ peer_delete_dialog_response_cb(GtkDialog *dialog, gint response_id, gpointer use
+ 
+         g_signal_emit_by_name(self, "changed");
+     }
++#endif
+ }
+ #endif
+ 
+@@ -1133,6 +1260,28 @@ peer_remove_button_clicked(GtkButton *button, gpointer user_data)
+ {
+     AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
+     AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
++#if GTK_CHECK_VERSION(4, 0, 0)
++    GtkListBox *list = GTK_LIST_BOX(gtk_builder_get_object(priv->builder, "peers_treeview"));
++    GtkListBoxRow *row = gtk_list_box_get_selected_row(list);
++    AWGDevicePeer *peer;
++    GtkWidget *dialog;
++
++    if (!row)
++        return;
++    peer = g_object_get_data(G_OBJECT(row), "awg-peer");
++    if (!peer)
++        return;
++
++    dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_root(priv->widget)),
++                                    GTK_DIALOG_MODAL,
++                                    GTK_MESSAGE_QUESTION,
++                                    GTK_BUTTONS_YES_NO,
++                                    _("Delete peer \"%s\"?"),
++                                    awg_device_peer_get_endpoint(peer) ?: awg_device_peer_get_public_key(peer));
++    g_signal_connect(dialog, "response", G_CALLBACK(peer_delete_dialog_response_cb), self);
++    gtk_widget_show(dialog);
++    return;
++#else
+     GtkWidget *treeview;
+     GtkTreeModel *model;
+     GtkTreeSelection *selection;
+@@ -1213,6 +1362,7 @@ peer_remove_button_clicked(GtkButton *button, gpointer user_data)
+         g_signal_emit_by_name(self, "changed");
+     }
+ #endif
++#endif
+ }
+ 
+ static gboolean
+@@ -1374,6 +1524,11 @@ init_editor_plugin(AmneziaWGEditor *self, NMConnection *connection, GError **err
+ 
+     widget = GTK_WIDGET(gtk_builder_get_object(priv->builder, "peers_treeview"));
+     if (widget) {
++#if GTK_CHECK_VERSION(4, 0, 0)
++        GtkListBox *list = GTK_LIST_BOX(widget);
++        g_signal_connect(list, "row-selected", G_CALLBACK(peers_listbox_selection_changed), self);
++        peers_treeview_rebuild(self);
++#else
+         GtkTreeView *treeview = GTK_TREE_VIEW(widget);
+         GtkTreeStore *store = gtk_tree_store_new(2, G_TYPE_STRING, G_TYPE_POINTER);
+         gtk_tree_view_set_model(treeview, GTK_TREE_MODEL(store));
+@@ -1408,6 +1563,7 @@ init_editor_plugin(AmneziaWGEditor *self, NMConnection *connection, GError **err
+ 
+         GtkTreeSelection *selection = gtk_tree_view_get_selection(treeview);
+         g_signal_connect(G_OBJECT(selection), "changed", G_CALLBACK(peers_treeview_selection_changed), self);
++#endif
+     }
+ 
+     widget = GTK_WIDGET(gtk_builder_get_object(priv->builder, "peer_remove_button"));
+@@ -1647,7 +1803,7 @@ save_interface_to_connection(AmneziaWGEditor *self)
+         GtkWidget *toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_random_trailers_check"));
+ 
+         if (toggle) {
+-            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle))) {
++            if (AWG_CHECK_GET_ACTIVE(toggle)) {
+                 nm_setting_vpn_add_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_RANDOM_TRAILERS, "on");
+             } else {
+                 nm_setting_vpn_remove_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_RANDOM_TRAILERS);
+@@ -1656,7 +1812,7 @@ save_interface_to_connection(AmneziaWGEditor *self)
+ 
+         toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_disable_cookies_check"));
+         if (toggle) {
+-            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle))) {
++            if (AWG_CHECK_GET_ACTIVE(toggle)) {
+                 nm_setting_vpn_add_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_DISABLE_COOKIES, "on");
+             } else {
+                 nm_setting_vpn_remove_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_DISABLE_COOKIES);
+@@ -1755,6 +1911,8 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
+     AmneziaWGEditorPrivate *priv;
+     gboolean new = TRUE;
+     NMSettingVpn *s_vpn;
++    GError *local_error = NULL;
++    GError **internal_error = error ? error : &local_error;
+ 
+     if (error)
+         g_return_val_if_fail(*error == NULL, NULL);
+@@ -1773,16 +1931,23 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
+ 
+     // create the GUI from our .ui file
+     // note: the resource is described in gresource.xml and gets compiled to resources.c
+-    if (!gtk_builder_add_from_resource(priv->builder, "/org/freedesktop/network-manager-amneziawg/nm-amneziawg-dialog.ui", error)) {
++    if (!gtk_builder_add_from_resource(priv->builder,
++                                       AMNEZIAWG_UI_RESOURCE_PATH,
++                                       internal_error)) {
++        g_warning("AmneziaWG editor: failed to load UI resource: %s",
++                  *internal_error ? (*internal_error)->message : "unknown error");
++        g_clear_error(&local_error);
+         g_object_unref(object);
+-        g_return_val_if_reached(NULL);
++        return NULL;
+     }
+ 
+     priv->widget = GTK_WIDGET(gtk_builder_get_object(priv->builder, "wg-vbox"));
+     if (!priv->widget) {
+-        g_set_error_literal(error, NMV_EDITOR_PLUGIN_ERROR, 0, _("could not load UI widget"));
++        g_set_error_literal(internal_error, NMV_EDITOR_PLUGIN_ERROR, 0, _("could not load UI widget"));
++        g_warning("AmneziaWG editor: UI resource does not contain wg-vbox");
++        g_clear_error(&local_error);
+         g_object_unref(object);
+-        g_return_val_if_reached(NULL);
++        return NULL;
+     }
+     g_object_ref_sink(priv->widget);
+ 
+@@ -1792,11 +1957,22 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
+         nm_setting_vpn_foreach_data_item(s_vpn, is_new_func, &new);
+     priv->new_connection = new;
+ 
+-    if (!init_editor_plugin(AMNEZIAWG_EDITOR(object), connection, error)) {
++    if (!init_editor_plugin(AMNEZIAWG_EDITOR(object), connection, internal_error)) {
++        if (*internal_error) {
++            g_warning("AmneziaWG editor: failed to initialize editor: %s", (*internal_error)->message);
++        } else {
++            g_set_error_literal(internal_error,
++                                NMV_EDITOR_PLUGIN_ERROR,
++                                0,
++                                _("failed to initialize AmneziaWG editor"));
++            g_warning("AmneziaWG editor: failed to initialize editor: unknown error");
++        }
++        g_clear_error(&local_error);
+         g_object_unref(object);
+         return NULL;
+     }
+ 
++    g_clear_error(&local_error);
+     return object;
+ }
+ 
+@@ -1806,6 +1982,19 @@ dispose(GObject *object)
+     AmneziaWGEditor *plugin = AMNEZIAWG_EDITOR(object);
+     AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(plugin);
+ 
++    /*
++     * The widgets can outlive the editor (the host drops the editor first and
++     * tears the page down later); GTK4 then emits e.g. "row-selected" on the
++     * peer list while it is destroyed.  Cut every handler that points at us.
++     */
++    if (priv->builder) {
++        GSList *objects = gtk_builder_get_objects(priv->builder);
++
++        for (GSList *l = objects; l; l = l->next)
++            g_signal_handlers_disconnect_by_data(l->data, plugin);
++        g_slist_free(objects);
++    }
++
+     g_clear_object(&priv->widget);
+ 
+     g_clear_object(&priv->builder);
+-- 
+2.56.0
+
