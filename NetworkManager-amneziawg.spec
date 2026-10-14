@@ -1,8 +1,8 @@
-%global commit      8d5221e689015df03616ac4116bc16f0939dec6d
+%global commit      faa6876e42a3c61f4fa1e87ba800337d41f144cc
 %global shortcommit %(c=%{commit}; echo ${c:0:7})
 
 Name:           NetworkManager-amneziawg
-Version:        0.9.11
+Version:        0.9.12
 Release:        1.git%{shortcommit}%{?dist}
 Summary:        NetworkManager VPN plugin for AmneziaWG VPN
 
@@ -92,7 +92,7 @@ Settings and other libnma based front ends.
 %{_libdir}/NetworkManager/libnm-gtk4-vpn-plugin-amneziawg-editor.so
 
 %changelog
-* Sun Oct 11 2026 Pavel Artsishevsky <polter.rnd@gmail.com> - 0.9.11-1.git8d5221e
+* Thu Oct 15 2026 Pavel Artsishevsky <polter.rnd@gmail.com> - 0.9.12-1.gitfaa6876
 - Add GTK4 connection editor and the GNOME auth dialog helper (now shows the stored keys)
 
 * Sun Oct 11 2026 Pavel Artsishevsky <polter.rnd@gmail.com> - 0.9.11-0.1.git8d5221e

@@ -1,4 +1,4 @@
-From 67eb34afd6046f22fb9a512781491779382e6821 Mon Sep 17 00:00:00 2001
+From caadb81cdfc0df61ee7e4d6eea4a6ad2b3c75975 Mon Sep 17 00:00:00 2001
 From: Pavel Artsishevsky <polter.rnd@gmail.com>
 Date: Sun, 11 Oct 2026 19:00:53 +0200
 Subject: [PATCH 1/2] feat: add GTK4 editor UI
@@ -36,7 +36,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
  create mode 100644 properties/nm-amneziawg-dialog-gtk4.ui
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 30476af..0dd3381 100644
+index c4358d2..d129d0d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -102,6 +102,7 @@ set(CMAKE_C_FLAGS_RELEASE "-O2")
@@ -53,9 +53,9 @@ index 30476af..0dd3381 100644
  set(PROPERTIES_RESOURCES_XML ${CMAKE_SOURCE_DIR}/properties/gresource.xml)
 +set(PROPERTIES_GTK4_RESOURCES_XML ${CMAKE_SOURCE_DIR}/properties/gresource-gtk4.xml)
  
- # The resource bundles files that gresource.xml refers to (.ui and friends).
- # Depending on the XML alone means editing one of them rebuilds nothing — the
-@@ -272,6 +274,34 @@ add_custom_command(
+ # find_program(REQUIRED) needs CMake 3.18; the explicit check works on the
+ # 3.13 minimum and fails with a clear message instead of a confusing
+@@ -280,6 +282,34 @@ add_custom_command(
  
  add_custom_target(gresources ALL DEPENDS properties/resources.h properties/resources.c)
  
@@ -90,7 +90,7 @@ index 30476af..0dd3381 100644
  set(PROPERTIES_CPPFLAGS
      -DICONDIR=\"${CMAKE_INSTALL_PREFIX}/share/pixmaps\"
      -DLOCALEDIR=\"${LOCALEDIR}\"
-@@ -390,7 +420,13 @@ target_compile_options(nm-vpn-plugin-amneziawg PRIVATE
+@@ -398,7 +428,13 @@ target_compile_options(nm-vpn-plugin-amneziawg PRIVATE
      -DNETWORKMANAGER_COMPILATION=NM_NETWORKMANAGER_COMPILATION_LIB_BASE
      -DNM_PLUGIN_DIR="${NM_PLUGIN_DIR}"
  )
@@ -105,7 +105,7 @@ index 30476af..0dd3381 100644
  set_target_properties(nm-vpn-plugin-amneziawg PROPERTIES
      OUTPUT_NAME "nm-vpn-plugin-amneziawg"
  )
-@@ -424,7 +460,11 @@ if(WITH_GTK3)
+@@ -432,7 +468,11 @@ if(WITH_GTK3)
  endif()
  
  if(WITH_GTK4)
@@ -118,7 +118,7 @@ index 30476af..0dd3381 100644
      target_include_directories(nm-vpn-plugin-amneziawg-editor-gtk4 PRIVATE ${CMAKE_SOURCE_DIR}/shared ${CMAKE_BINARY_DIR} ${GTK4_INCLUDE_DIRS} ${LIBNMA4_INCLUDE_DIRS})
      target_link_libraries(nm-vpn-plugin-amneziawg-editor-gtk4 PRIVATE
          ${COMMON_LDFLAGS} nm-vpn-plugin-amneziawg-core nm-vpn-plugin-amneziawg-utils ${GLIB_LIBRARIES} ${GTK4_LIBRARIES} ${LIBNM_LIBRARIES} ${LIBNMA4_LIBRARIES}
-@@ -433,6 +473,7 @@ if(WITH_GTK4)
+@@ -441,6 +481,7 @@ if(WITH_GTK4)
          ${COMMON_CFLAGS} ${GTK4_CFLAGS} ${COMMON_DEFINITIONS} ${PROPERTIES_CPPFLAGS}
          -DNETWORKMANAGER_COMPILATION=NM_NETWORKMANAGER_COMPILATION_LIB_EDITOR
          -DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_4_6
@@ -1326,7 +1326,7 @@ index 2be03e5..aa18be1 100644
  
  /*****************************************************************************/
 diff --git a/properties/nm-amneziawg-editor.c b/properties/nm-amneziawg-editor.c
-index 11670ff..5a0525b 100644
+index c57326e..a8dfbb3 100644
 --- a/properties/nm-amneziawg-editor.c
 +++ b/properties/nm-amneziawg-editor.c
 @@ -43,6 +43,10 @@
@@ -1340,7 +1340,7 @@ index 11670ff..5a0525b 100644
  /*****************************************************************************/
  
  static void amneziawg_editor_plugin_widget_interface_init(NMVpnEditorInterface *iface_class);
-@@ -371,7 +375,7 @@ show_private_key_toggled(GtkWidget *widget, gpointer user_data)
+@@ -382,7 +386,7 @@ show_private_key_toggled(GtkWidget *widget, gpointer user_data)
  
      entry = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_private_key_entry"));
      if (entry) {
@@ -1349,7 +1349,7 @@ index 11670ff..5a0525b 100644
      }
  }
  
-@@ -559,7 +563,7 @@ fill_interface_from_connection(AmneziaWGEditor *self)
+@@ -606,7 +610,7 @@ fill_interface_from_connection(AmneziaWGEditor *self)
          GtkWidget *toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_random_trailers_check"));
          if (toggle) {
              str = nm_setting_vpn_get_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_RANDOM_TRAILERS);
@@ -1358,7 +1358,7 @@ index 11670ff..5a0525b 100644
          }
      }
  
-@@ -567,7 +571,7 @@ fill_interface_from_connection(AmneziaWGEditor *self)
+@@ -614,7 +618,7 @@ fill_interface_from_connection(AmneziaWGEditor *self)
          GtkWidget *toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_disable_cookies_check"));
          if (toggle) {
              str = nm_setting_vpn_get_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_DISABLE_COOKIES);
@@ -1367,7 +1367,7 @@ index 11670ff..5a0525b 100644
          }
      }
  }
-@@ -580,11 +584,11 @@ typedef struct {
+@@ -627,11 +631,11 @@ typedef struct {
      GtkEntry *entry_endpoint;
      GtkEntry *entry_psk;
      GtkSpinButton *spin_keepalive;
@@ -1382,7 +1382,7 @@ index 11670ff..5a0525b 100644
      gboolean is_new;
  } PeerDialogData;
  
-@@ -607,7 +611,7 @@ peer_dialog_update_ui(PeerDialogData *data)
+@@ -654,7 +658,7 @@ peer_dialog_update_ui(PeerDialogData *data)
      guint16 ka = awg_device_peer_get_keep_alive_interval(data->peer);
      gtk_spin_button_set_value(data->spin_keepalive, ka);
  
@@ -1391,7 +1391,7 @@ index 11670ff..5a0525b 100644
  }
  
  static void
-@@ -635,7 +639,7 @@ peer_dialog_update_peer(PeerDialogData *data)
+@@ -682,7 +686,7 @@ peer_dialog_update_peer(PeerDialogData *data)
      gint keepalive = gtk_spin_button_get_value_as_int(data->spin_keepalive);
      awg_device_peer_set_keep_alive_interval(data->peer, keepalive);
  
@@ -1400,7 +1400,7 @@ index 11670ff..5a0525b 100644
  }
  
  static void
-@@ -653,7 +657,7 @@ peer_dialog_cancel_clicked(GtkWidget *widget, PeerDialogData *data)
+@@ -700,7 +704,7 @@ peer_dialog_cancel_clicked(GtkWidget *widget, PeerDialogData *data)
  static void
  peer_dialog_show_psk_toggled(GtkWidget *widget, PeerDialogData *data)
  {
@@ -1409,7 +1409,7 @@ index 11670ff..5a0525b 100644
  }
  
  static gboolean
-@@ -746,7 +750,7 @@ peer_dialog_create(GtkWidget *toplevel, AWGDevicePeer *peer, AmneziaWGEditor *ed
+@@ -793,7 +797,7 @@ peer_dialog_create(GtkWidget *toplevel, AWGDevicePeer *peer, AmneziaWGEditor *ed
  
      gtk_builder_set_translation_domain(builder, GETTEXT_PACKAGE);
  
@@ -1418,7 +1418,7 @@ index 11670ff..5a0525b 100644
          g_object_unref(builder);
          return NULL;
      }
-@@ -765,11 +769,11 @@ peer_dialog_create(GtkWidget *toplevel, AWGDevicePeer *peer, AmneziaWGEditor *ed
+@@ -812,11 +816,11 @@ peer_dialog_create(GtkWidget *toplevel, AWGDevicePeer *peer, AmneziaWGEditor *ed
      data->entry_endpoint = GTK_ENTRY(gtk_builder_get_object(builder, "peer_dialog_endpoint"));
      data->entry_psk = GTK_ENTRY(gtk_builder_get_object(builder, "peer_dialog_psk"));
      data->spin_keepalive = GTK_SPIN_BUTTON(gtk_builder_get_object(builder, "peer_dialog_keepalive"));
@@ -1433,7 +1433,7 @@ index 11670ff..5a0525b 100644
      button_cancel = GTK_WIDGET(gtk_builder_get_object(builder, "peer_dialog_button_cancel"));
  
      g_object_set_data_full(G_OBJECT(dialog), "peer-data", data, (GDestroyNotify)peer_dialog_data_free);
-@@ -845,14 +849,24 @@ peer_dialog_response(GtkDialog *dialog, gint response_id, PeerDialogInfo *info)
+@@ -895,14 +899,24 @@ peer_dialog_response(GtkDialog *dialog, gint response_id, PeerDialogInfo *info)
              }
  
              if (!valid) {
@@ -1459,7 +1459,7 @@ index 11670ff..5a0525b 100644
  
              peer_dialog_update_peer(data);
  
-@@ -909,6 +923,35 @@ peer_edit_button_clicked(GtkButton *button, gpointer user_data)
+@@ -959,6 +973,35 @@ peer_edit_button_clicked(GtkButton *button, gpointer user_data)
  {
      AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
      AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
@@ -1495,7 +1495,7 @@ index 11670ff..5a0525b 100644
      GtkWidget *treeview, *dialog;
      GtkTreeModel *model;
      GtkTreeSelection *selection;
-@@ -961,6 +1004,7 @@ peer_edit_button_clicked(GtkButton *button, gpointer user_data)
+@@ -1011,6 +1054,7 @@ peer_edit_button_clicked(GtkButton *button, gpointer user_data)
      }
  
      gtk_widget_show(dialog);
@@ -1503,7 +1503,7 @@ index 11670ff..5a0525b 100644
  }
  
  // Callback: TreeView selection changed
-@@ -982,6 +1026,24 @@ peers_treeview_selection_changed(GtkTreeSelection *selection, gpointer user_data
+@@ -1032,6 +1076,24 @@ peers_treeview_selection_changed(GtkTreeSelection *selection, gpointer user_data
      }
  }
  
@@ -1528,7 +1528,7 @@ index 11670ff..5a0525b 100644
  // Callback: TreeView row double-clicked to edit peer
  static void
  peers_treeview_row_activated(GtkTreeView *tree_view, GtkTreePath *path, GtkTreeViewColumn *column, gpointer user_data)
-@@ -1035,6 +1097,42 @@ peers_treeview_rebuild(AmneziaWGEditor *self)
+@@ -1085,6 +1147,42 @@ peers_treeview_rebuild(AmneziaWGEditor *self)
      if (!treeview)
          return;
  
@@ -1571,7 +1571,7 @@ index 11670ff..5a0525b 100644
      GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeview));
      if (!GTK_IS_TREE_STORE(model))
          return;
-@@ -1060,6 +1158,7 @@ peers_treeview_rebuild(AmneziaWGEditor *self)
+@@ -1110,6 +1208,7 @@ peers_treeview_rebuild(AmneziaWGEditor *self)
              gtk_tree_store_set(GTK_TREE_STORE(model), &iter, 0, "(new peer)", 1, p, -1);
          }
      }
@@ -1579,7 +1579,7 @@ index 11670ff..5a0525b 100644
  }
  
  #if GTK_CHECK_VERSION(4, 0, 0)
-@@ -1069,6 +1168,33 @@ peer_delete_dialog_response_cb(GtkDialog *dialog, gint response_id, gpointer use
+@@ -1119,6 +1218,33 @@ peer_delete_dialog_response_cb(GtkDialog *dialog, gint response_id, gpointer use
  {
      AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
      AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
@@ -1613,7 +1613,7 @@ index 11670ff..5a0525b 100644
      GtkWidget *treeview, *remove_btn, *warning_label;
      GtkTreeModel *model;
      GtkTreeSelection *selection;
-@@ -1124,6 +1250,7 @@ peer_delete_dialog_response_cb(GtkDialog *dialog, gint response_id, gpointer use
+@@ -1174,6 +1300,7 @@ peer_delete_dialog_response_cb(GtkDialog *dialog, gint response_id, gpointer use
  
          g_signal_emit_by_name(self, "changed");
      }
@@ -1621,7 +1621,7 @@ index 11670ff..5a0525b 100644
  }
  #endif
  
-@@ -1133,6 +1260,28 @@ peer_remove_button_clicked(GtkButton *button, gpointer user_data)
+@@ -1183,6 +1310,28 @@ peer_remove_button_clicked(GtkButton *button, gpointer user_data)
  {
      AmneziaWGEditor *self = AMNEZIAWG_EDITOR(user_data);
      AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(self);
@@ -1650,7 +1650,7 @@ index 11670ff..5a0525b 100644
      GtkWidget *treeview;
      GtkTreeModel *model;
      GtkTreeSelection *selection;
-@@ -1213,6 +1362,7 @@ peer_remove_button_clicked(GtkButton *button, gpointer user_data)
+@@ -1263,6 +1412,7 @@ peer_remove_button_clicked(GtkButton *button, gpointer user_data)
          g_signal_emit_by_name(self, "changed");
      }
  #endif
@@ -1658,7 +1658,7 @@ index 11670ff..5a0525b 100644
  }
  
  static gboolean
-@@ -1374,6 +1524,11 @@ init_editor_plugin(AmneziaWGEditor *self, NMConnection *connection, GError **err
+@@ -1425,6 +1575,11 @@ init_editor_plugin(AmneziaWGEditor *self, NMConnection *connection, GError **err
  
      widget = GTK_WIDGET(gtk_builder_get_object(priv->builder, "peers_treeview"));
      if (widget) {
@@ -1670,7 +1670,7 @@ index 11670ff..5a0525b 100644
          GtkTreeView *treeview = GTK_TREE_VIEW(widget);
          GtkTreeStore *store = gtk_tree_store_new(2, G_TYPE_STRING, G_TYPE_POINTER);
          gtk_tree_view_set_model(treeview, GTK_TREE_MODEL(store));
-@@ -1408,6 +1563,7 @@ init_editor_plugin(AmneziaWGEditor *self, NMConnection *connection, GError **err
+@@ -1459,6 +1614,7 @@ init_editor_plugin(AmneziaWGEditor *self, NMConnection *connection, GError **err
  
          GtkTreeSelection *selection = gtk_tree_view_get_selection(treeview);
          g_signal_connect(G_OBJECT(selection), "changed", G_CALLBACK(peers_treeview_selection_changed), self);
@@ -1678,7 +1678,7 @@ index 11670ff..5a0525b 100644
      }
  
      widget = GTK_WIDGET(gtk_builder_get_object(priv->builder, "peer_remove_button"));
-@@ -1647,7 +1803,7 @@ save_interface_to_connection(AmneziaWGEditor *self)
+@@ -1662,7 +1818,7 @@ save_interface_to_connection(AmneziaWGEditor *self)
          GtkWidget *toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_random_trailers_check"));
  
          if (toggle) {
@@ -1687,7 +1687,7 @@ index 11670ff..5a0525b 100644
                  nm_setting_vpn_add_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_RANDOM_TRAILERS, "on");
              } else {
                  nm_setting_vpn_remove_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_RANDOM_TRAILERS);
-@@ -1656,7 +1812,7 @@ save_interface_to_connection(AmneziaWGEditor *self)
+@@ -1671,7 +1827,7 @@ save_interface_to_connection(AmneziaWGEditor *self)
  
          toggle = GTK_WIDGET(gtk_builder_get_object(priv->builder, "interface_disable_cookies_check"));
          if (toggle) {
@@ -1696,7 +1696,7 @@ index 11670ff..5a0525b 100644
                  nm_setting_vpn_add_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_DISABLE_COOKIES, "on");
              } else {
                  nm_setting_vpn_remove_data_item(s_vpn, NM_AWG_VPN_CONFIG_DEVICE_DISABLE_COOKIES);
-@@ -1755,6 +1911,8 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
+@@ -1772,6 +1928,8 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
      AmneziaWGEditorPrivate *priv;
      gboolean new = TRUE;
      NMSettingVpn *s_vpn;
@@ -1705,7 +1705,7 @@ index 11670ff..5a0525b 100644
  
      if (error)
          g_return_val_if_fail(*error == NULL, NULL);
-@@ -1773,16 +1931,23 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
+@@ -1790,16 +1948,23 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
  
      // create the GUI from our .ui file
      // note: the resource is described in gresource.xml and gets compiled to resources.c
@@ -1733,7 +1733,7 @@ index 11670ff..5a0525b 100644
      }
      g_object_ref_sink(priv->widget);
  
-@@ -1792,11 +1957,22 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
+@@ -1809,11 +1974,22 @@ amneziawg_editor_new(NMConnection *connection, GError **error)
          nm_setting_vpn_foreach_data_item(s_vpn, is_new_func, &new);
      priv->new_connection = new;
  
@@ -1757,7 +1757,7 @@ index 11670ff..5a0525b 100644
      return object;
  }
  
-@@ -1806,6 +1982,19 @@ dispose(GObject *object)
+@@ -1823,6 +1999,19 @@ dispose(GObject *object)
      AmneziaWGEditor *plugin = AMNEZIAWG_EDITOR(object);
      AmneziaWGEditorPrivate *priv = AMNEZIAWG_EDITOR_GET_PRIVATE(plugin);
  
